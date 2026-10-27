@@ -7,32 +7,36 @@ import {
   Col,
   Image,
   InputGroup,
-  ListGroup,
   Row,
   Tab,
   Table,
   Tabs,
 } from 'react-bootstrap';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { getErrorMessage } from '../api/axiosClient';
 import laptopApi from '../api/laptopApi';
 import reviewApi from '../api/reviewApi';
+import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import ErrorAlert from '../components/common/ErrorAlert';
 import Loading from '../components/common/Loading';
 import Price from '../components/common/Price';
 import StarRating from '../components/common/StarRating';
 import LaptopGrid from '../components/laptop/LaptopGrid';
+import ReviewForm from '../components/laptop/ReviewForm';
+import ReviewList from '../components/laptop/ReviewList';
 import useAxios from '../hooks/useAxios';
 import usePageTitle from '../hooks/usePageTitle';
 import NotFoundPage from './NotFoundPage';
-import { formatDate } from '../utils/format';
 import { handleImageError } from '../utils/image';
 
-async function loadDetail(id, signal) {
+async function loadDetail(id, signal, userId) {
   const laptop = await laptopApi.getById(id, signal);
-  const [reviewsResult, relatedResult] = await Promise.allSettled([
+
+  const [reviewsResult, relatedResult, ownReviewResult] = await Promise.allSettled([
     reviewApi.getByLaptop(id, signal),
     laptopApi.getRelated(laptop, signal),
+    userId ? reviewApi.findByUser(id, userId, signal) : Promise.resolve(null),
   ]);
 
   return {
@@ -41,6 +45,8 @@ async function loadDetail(id, signal) {
     reviewsError: reviewsResult.status === 'rejected' ? getErrorMessage(reviewsResult.reason) : null,
     related: relatedResult.status === 'fulfilled' ? relatedResult.value : [],
     relatedError: relatedResult.status === 'rejected' ? getErrorMessage(relatedResult.reason) : null,
+    ownReview: ownReviewResult.status === 'fulfilled' ? ownReviewResult.value : null,
+    ownReviewError: ownReviewResult.status === 'rejected' ? getErrorMessage(ownReviewResult.reason) : null,
   };
 }
 
@@ -58,11 +64,65 @@ export default function LaptopDetailPage() {
 
 function LaptopDetail({ id }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { user } = useAuth();
+  const { showToast } = useToast();
   const [quantity, setQuantity] = useState(1);
   const [cartNotice, setCartNotice] = useState('');
-  const { data, loading, error, refetch } = useAxios((signal) => loadDetail(id, signal), [id]);
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const { data, loading, error, refetch, setData } = useAxios(
+    (signal) => loadDetail(id, signal, user?.id),
+    [id, user?.id],
+  );
   const laptop = data?.laptop;
   usePageTitle(laptop?.name || 'Chi tiết laptop');
+
+  async function handleReview({ rating, comment }) {
+    if (!user || !laptop || !data) return false;
+    setSubmittingReview(true);
+    try {
+      const existing = await reviewApi.findByUser(laptop.id, user.id);
+      if (existing) {
+        setData((current) => ({ ...current, ownReview: existing }));
+        showToast('Bạn đã đánh giá sản phẩm này rồi', 'warning');
+        return false;
+      }
+
+      const review = await reviewApi.create({
+        laptopId: laptop.id,
+        userId: user.id,
+        userName: user.fullName || user.email || 'Khách hàng',
+        rating,
+        comment,
+        createdAt: new Date().toISOString(),
+      });
+
+      const updatedReviews = [review, ...data.reviews];
+      const averageRating = Math.round(
+        (updatedReviews.reduce((sum, item) => sum + Number(item.rating), 0) / updatedReviews.length) * 10,
+      ) / 10;
+
+      setData((current) => ({
+        ...current,
+        reviews: [review, ...current.reviews],
+        ownReview: review,
+        laptop: { ...current.laptop, rating: averageRating },
+      }));
+      showToast('Cảm ơn bạn đã đánh giá!');
+
+      try {
+        await laptopApi.patch(laptop.id, { rating: averageRating });
+      } catch (ratingError) {
+        showToast(`Đánh giá đã được lưu nhưng chưa cập nhật được điểm trung bình: ${getErrorMessage(ratingError)}`, 'warning');
+      }
+      return true;
+    } catch (reviewError) {
+      showToast(getErrorMessage(reviewError), 'danger');
+      return false;
+    } finally {
+      setSubmittingReview(false);
+    }
+  }
 
   if (loading) return <Loading text="Đang tải thông tin laptop..." />;
   if (error) {
@@ -182,19 +242,27 @@ function LaptopDetail({ id }) {
             <Alert variant="warning">
               Không tải được đánh giá. {data.reviewsError}
             </Alert>
-          ) : data.reviews.length === 0 ? (
-            <p className="text-secondary py-3">Chưa có đánh giá nào.</p>
           ) : (
-            <ListGroup variant="flush">
-              {data.reviews.map((review) => (
-                <ListGroup.Item key={review.id} className="px-0">
-                  <strong>{review.userName || 'Khách hàng'}</strong>{' '}
-                  <small className="text-secondary">{formatDate(review.createdAt)}</small>
-                  <div><StarRating value={review.rating} showValue={false} /></div>
-                  <p className="mb-0">{review.comment}</p>
-                </ListGroup.Item>
-              ))}
-            </ListGroup>
+            <>
+              {user && data.ownReviewError && (
+                <Alert variant="warning">
+                  Không kiểm tra được trạng thái đánh giá của bạn. {data.ownReviewError}
+                  <Button variant="link" className="p-0 ms-2" onClick={refetch}>Thử lại</Button>
+                </Alert>
+              )}
+              {user && !data.ownReviewError && data.ownReview && (
+                <Alert variant="info">Bạn đã đánh giá sản phẩm này rồi.</Alert>
+              )}
+              {user && !data.ownReviewError && !data.ownReview && (
+                <ReviewForm onSubmit={handleReview} submitting={submittingReview} />
+              )}
+              {!user && (
+                <Alert variant="info">
+                  <Link to="/login" state={{ from: location }}>Đăng nhập</Link> để gửi đánh giá.
+                </Alert>
+              )}
+              <ReviewList reviews={data.reviews} />
+            </>
           )}
         </Tab>
       </Tabs>
