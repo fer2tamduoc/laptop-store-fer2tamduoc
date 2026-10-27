@@ -24,6 +24,7 @@ import StarRating from '../components/common/StarRating';
 import LaptopGrid from '../components/laptop/LaptopGrid';
 import useAxios from '../hooks/useAxios';
 import usePageTitle from '../hooks/usePageTitle';
+import useAddToCart from '../hooks/useAddToCart';
 import NotFoundPage from './NotFoundPage';
 import { formatDate } from '../utils/format';
 import { handleImageError } from '../utils/image';
@@ -58,8 +59,8 @@ export default function LaptopDetailPage() {
 
 function LaptopDetail({ id }) {
   const navigate = useNavigate();
+  const { add, adding } = useAddToCart();
   const [quantity, setQuantity] = useState(1);
-  const [cartNotice, setCartNotice] = useState('');
   const { data, loading, error, refetch } = useAxios((signal) => loadDetail(id, signal), [id]);
   const laptop = data?.laptop;
   usePageTitle(laptop?.name || 'Chi tiết laptop');
@@ -149,16 +150,15 @@ function LaptopDetail({ id }) {
             </InputGroup>
             <Button
               size="lg"
-              disabled={outOfStock}
-              onClick={() => setCartNotice('Chức năng giỏ hàng sẽ được kết nối ở Issue 22.')}
+              disabled={outOfStock || adding}
+              onClick={() => add(laptop, quantity)}
             >
-              🛒 Thêm vào giỏ
+              {adding ? 'Đang thêm...' : '🛒 Thêm vào giỏ'}
             </Button>
             <Button variant="outline-secondary" size="lg" onClick={() => navigate(-1)}>
               ← Quay lại
             </Button>
           </div>
-          {cartNotice && <Alert className="mt-3 mb-0" variant="info">{cartNotice}</Alert>}
         </Col>
       </Row>
 
